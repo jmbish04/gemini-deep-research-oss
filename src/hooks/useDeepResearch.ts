@@ -1,4 +1,3 @@
-import { GoogleGenAI } from '@google/genai';
 import { useCallback, useMemo } from 'react';
 import runQuestionAndAnswerAgent from '../agents/qna';
 import runReportPlanAgent from '../agents/report-plan';
@@ -6,10 +5,12 @@ import runReporterAgent from '../agents/reporter';
 import runResearchDeepAgent from '../agents/research-deep';
 import runResearchLeadAgent from '../agents/research-lead';
 import runResearcherAgent from '../agents/researcher';
+import { useAuthStore } from '../stores/auth';
 import { useSettingStore } from '../stores/setting';
 import { useTaskStore } from '../stores/task';
 import type { LogFunction, ResearchTask } from '../types';
 import { buildUserContent, buildUserContentForResearcher } from '../utils/user-contents';
+import { createMockGoogleGenAI } from '../utils/mock-genai';
 
 // Logging helper functions for better consistency
 const createLogHelper = (addLog: LogFunction) => ({
@@ -51,27 +52,23 @@ const createLogHelper = (addLog: LogFunction) => ({
 function useDeepResearch() {
   const taskStore = useTaskStore();
   const settingStore = useSettingStore();
+  const { isAuthenticated } = useAuthStore();
   const processConcurrent = useConcurrentTaskProcessor();
 
   // Create logging helpers
   const log = useMemo(() => createLogHelper(taskStore.addLog), [taskStore.addLog]);
 
-  // Memoize GoogleGenAI instance (only create if API key is set)
+  // Memoize mock GoogleGenAI instance (only create if authenticated)
   const googleGenAI = useMemo(
-    () =>
-      settingStore.apiKey
-        ? new GoogleGenAI({
-            apiKey: settingStore.apiKey,
-          })
-        : null,
-    [settingStore.apiKey]
+    () => (isAuthenticated ? createMockGoogleGenAI() : null),
+    [isAuthenticated]
   );
 
   // Memoize common agent parameters
   const commonAgentParams = useMemo(
     () => ({
       addLog: (message: string, agent?: string) => log.agent(message, agent),
-      googleGenAI: googleGenAI as GoogleGenAI,
+      googleGenAI: googleGenAI as any,
       thinkingBudget: settingStore.thinkingBudget,
     }),
     [googleGenAI, settingStore.thinkingBudget, log]
@@ -79,8 +76,8 @@ function useDeepResearch() {
 
   // Generate Q&As
   const generateQnAs = useCallback(async () => {
-    if (!settingStore.isApiKeyValid || settingStore.isApiKeyValidating || !googleGenAI) {
-      log.error('API key is invalid or still validating', 'system', 'validation');
+    if (!isAuthenticated || !googleGenAI) {
+      log.error('Not authenticated', 'system', 'validation');
       return;
     }
 
@@ -121,12 +118,12 @@ function useDeepResearch() {
     } finally {
       taskStore.setIsGeneratingQnA(false);
     }
-  }, [commonAgentParams, taskStore, settingStore, log, googleGenAI]);
+  }, [commonAgentParams, taskStore, settingStore, log, googleGenAI, isAuthenticated]);
 
   // Generate report plan
   const generateReportPlan = useCallback(async () => {
-    if (!googleGenAI) {
-      log.error('API key is invalid', 'system', 'validation');
+    if (!isAuthenticated || !googleGenAI) {
+      log.error('Not authenticated', 'system', 'validation');
       return;
     }
 
@@ -176,14 +173,14 @@ function useDeepResearch() {
       streamingHandler?.finish();
       taskStore.setIsGeneratingReportPlan(false);
     }
-  }, [commonAgentParams, taskStore, settingStore, log, googleGenAI]);
+  }, [commonAgentParams, taskStore, settingStore, log, googleGenAI, isAuthenticated]);
 
   // Generate research tasks
   const generateResearchTasks = useCallback(
     async (tier: number, abortController?: AbortController | null) => {
-      if (!googleGenAI) {
-        log.error('API key is invalid', 'system', 'validation');
-        throw new Error('API key is invalid');
+      if (!isAuthenticated || !googleGenAI) {
+        log.error('Not authenticated', 'system', 'validation');
+        throw new Error('Not authenticated');
       }
 
       log.process(
@@ -297,15 +294,15 @@ function useDeepResearch() {
         throw error;
       }
     },
-    [commonAgentParams, taskStore, settingStore, log, googleGenAI]
+    [commonAgentParams, taskStore, settingStore, log, googleGenAI, isAuthenticated]
   );
 
   // Run research tasks
   const runResearchTasks = useCallback(
     async (tier: number, abortController?: AbortController | null) => {
-      if (!googleGenAI) {
-        log.error('API key is invalid', 'system', 'validation');
-        throw new Error('API key is invalid');
+      if (!isAuthenticated || !googleGenAI) {
+        log.error('Not authenticated', 'system', 'validation');
+        throw new Error('Not authenticated');
       }
 
       const maxConcurrency = settingStore.parallelSearch || 1;
@@ -441,6 +438,7 @@ function useDeepResearch() {
       googleGenAI,
       processConcurrent,
       log,
+      isAuthenticated,
     ]
   );
 
@@ -572,8 +570,8 @@ function useDeepResearch() {
 
   // Generate final report
   const generateFinalReport = useCallback(async () => {
-    if (!googleGenAI) {
-      log.error('API key is invalid', 'system', 'validation');
+    if (!isAuthenticated || !googleGenAI) {
+      log.error('Not authenticated', 'system', 'validation');
       return;
     }
 
@@ -661,14 +659,14 @@ function useDeepResearch() {
       taskStore.setIsGeneratingFinalReport(false);
       taskStore.setFinalReportAbortController(null);
     }
-  }, [commonAgentParams, taskStore, settingStore, log, googleGenAI]);
+  }, [commonAgentParams, taskStore, settingStore, log, googleGenAI, isAuthenticated]);
 
   // Upload file
   const uploadFile = useCallback(
     async (file: globalThis.File) => {
-      if (!settingStore.isApiKeyValid || !googleGenAI) {
-        log.error('API key is invalid', 'system', 'file-upload');
-        throw new Error('API key is invalid');
+      if (!isAuthenticated || !googleGenAI) {
+        log.error('Not authenticated', 'system', 'file-upload');
+        throw new Error('Not authenticated');
       }
 
       try {
@@ -691,15 +689,15 @@ function useDeepResearch() {
         throw error;
       }
     },
-    [googleGenAI, taskStore, settingStore, log]
+    [googleGenAI, taskStore, log, isAuthenticated]
   );
 
   // Delete file
   const deleteFile = useCallback(
     async (fileName: string) => {
-      if (!settingStore.isApiKeyValid || !googleGenAI) {
-        log.error('API key is invalid', 'system', 'file-management');
-        throw new Error('API key is invalid');
+      if (!isAuthenticated || !googleGenAI) {
+        log.error('Not authenticated', 'system', 'file-management');
+        throw new Error('Not authenticated');
       }
 
       try {
@@ -713,13 +711,13 @@ function useDeepResearch() {
         throw error;
       }
     },
-    [googleGenAI, taskStore, settingStore, log]
+    [googleGenAI, taskStore, log, isAuthenticated]
   );
 
   // Delete all uploaded files
   const deleteAllFiles = useCallback(async () => {
-    if (!settingStore.isApiKeyValid || !googleGenAI) {
-      log.error('API key is invalid', 'system', 'file-management');
+    if (!isAuthenticated || !googleGenAI) {
+      log.error('Not authenticated', 'system', 'file-management');
       return;
     }
 
@@ -754,7 +752,7 @@ function useDeepResearch() {
     } catch (error) {
       log.error(`Failed to delete files: ${error}`, 'system', 'file-management');
     }
-  }, [googleGenAI, taskStore, settingStore, log]);
+  }, [googleGenAI, taskStore, log, isAuthenticated]);
 
   // Reset tasks and delete all files
   const resetWithFiles = useCallback(async () => {
