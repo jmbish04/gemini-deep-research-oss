@@ -1,5 +1,7 @@
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
+import { useEffect, useState } from 'react';
+import LoginDialog from './components/Dialog/LoginDialog';
 import QueryLibraryDialog from './components/Dialog/QueryLibraryDialog';
 import SettingDialog from './components/Dialog/SettingDialog';
 import Header from './components/Internal/Header';
@@ -11,8 +13,17 @@ import ResearchReport from './components/Research/Report';
 import ResearchReportPlan from './components/Research/ReportPlan';
 import ResearchStepper from './components/Research/ResearchStepper';
 import ResearchTasks from './components/Research/Tasks';
+import { useAuthStore } from './stores/auth';
 
 function App() {
+  const { isAuthenticated } = useAuthStore();
+  const [showLoginDialog, setShowLoginDialog] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setShowLoginDialog(true);
+    }
+  }, [isAuthenticated]);
   return (
     <div className="min-h-screen bg-zinc-200">
       <div className="mx-auto max-w-screen-lg px-4 max-lg:max-w-screen-md">
@@ -45,6 +56,7 @@ function App() {
         {/* Dialogs */}
         <SettingDialog />
         <QueryLibraryDialog />
+        <LoginDialog open={showLoginDialog} onClose={() => setShowLoginDialog(false)} />
 
         {/* Process Logs */}
         <ProcessLogs />
