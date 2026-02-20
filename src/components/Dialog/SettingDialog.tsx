@@ -1,10 +1,7 @@
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
-import Visibility from '@mui/icons-material/Visibility';
-import VisibilityOff from '@mui/icons-material/VisibilityOff';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Chip from '@mui/material/Chip';
-import CircularProgress from '@mui/material/CircularProgress';
 import Dialog from '@mui/material/Dialog';
 import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
@@ -12,17 +9,15 @@ import DialogContentText from '@mui/material/DialogContentText';
 import DialogTitle from '@mui/material/DialogTitle';
 import Divider from '@mui/material/Divider';
 import FormControl from '@mui/material/FormControl';
-import IconButton from '@mui/material/IconButton';
 import MenuItem from '@mui/material/MenuItem';
 import type { SelectChangeEvent } from '@mui/material/Select';
 import Select from '@mui/material/Select';
 import { useTheme } from '@mui/material/styles';
-import TextField from '@mui/material/TextField';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import type React from 'react';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import tones from '../../consts/tones';
 import { useGlobalStore } from '../../stores/global';
 import { useSettingStore } from '../../stores/setting';
@@ -33,7 +28,6 @@ import ToneInfoDialog from './ToneInfoDialog';
 const SettingDialog = memo(function SettingDialog() {
   const { openSetting, setOpenSetting } = useGlobalStore();
   const {
-    apiKey,
     coreModel,
     taskModel,
     thinkingBudget,
@@ -42,93 +36,21 @@ const SettingDialog = memo(function SettingDialog() {
     parallelSearch,
     reportTone,
     modelList,
-    isApiKeyValid,
-    isApiKeyValidating,
     update,
-    validateApiKey,
   } = useSettingStore();
 
-  const [showApiKey, setShowApiKey] = useState(false);
   const [toneInfoOpen, setToneInfoOpen] = useState(false);
-
-  // Use refs to track validation state and prevent race conditions
-  const validationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastValidatedKeyRef = useRef<string>('');
-  const validationSequenceRef = useRef<number>(0);
 
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
 
   // Memoize expensive computations
   const selectedTone = useMemo(() => tones.find(tone => tone.slug === reportTone), [reportTone]);
-  const modelsDisabled = useMemo(
-    () => !apiKey.trim() || !isApiKeyValid || isApiKeyValidating,
-    [apiKey, isApiKeyValid, isApiKeyValidating]
-  );
-
-  // Improved API key validation with race condition prevention
-  useEffect(() => {
-    // Clear any existing timeout
-    if (validationTimeoutRef.current) {
-      clearTimeout(validationTimeoutRef.current);
-    }
-
-    const trimmedKey = apiKey.trim();
-
-    // If the key is empty, immediately set as invalid
-    if (!trimmedKey) {
-      lastValidatedKeyRef.current = '';
-      update({ isApiKeyValid: false, isApiKeyValidating: false });
-      return;
-    }
-
-    // If this is the same key we just validated, skip validation
-    if (trimmedKey === lastValidatedKeyRef.current && isApiKeyValid) {
-      return;
-    }
-
-    // Increment sequence number for this validation attempt
-    const currentSequence = ++validationSequenceRef.current;
-
-    // Set validating state immediately for non-empty keys
-    update({ isApiKeyValidating: true });
-
-    // Debounced validation
-    validationTimeoutRef.current = setTimeout(async () => {
-      // Only proceed if this is still the latest validation request
-      if (currentSequence === validationSequenceRef.current) {
-        try {
-          await validateApiKey(trimmedKey);
-          lastValidatedKeyRef.current = trimmedKey;
-        } catch (error) {
-          console.error('API key validation error:', error);
-        }
-      }
-    }, 800); // Increased debounce time to 800ms for better UX
-
-    return () => {
-      if (validationTimeoutRef.current) {
-        clearTimeout(validationTimeoutRef.current);
-      }
-    };
-  }, [apiKey, validateApiKey, update, isApiKeyValid]);
 
   // Memoized handlers to prevent unnecessary re-renders
   const handleClose = useCallback(() => {
     setOpenSetting(false);
-    setShowApiKey(false);
   }, [setOpenSetting]);
-
-  const handleApiKeyToggle = useCallback(() => {
-    setShowApiKey(prev => !prev);
-  }, []);
-
-  const handleApiKeyChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      update({ apiKey: e.target.value });
-    },
-    [update]
-  );
 
   const handleCoreModelChange = useCallback(
     (e: SelectChangeEvent<string>) => {
@@ -215,7 +137,7 @@ const SettingDialog = memo(function SettingDialog() {
             browser.
           </DialogContentText>
 
-          {/* API Configuration Section */}
+          {/* Model Selection Section */}
           <Box sx={{ mb: { xs: 3, sm: 4 } }}>
             <Typography
               variant="h6"
@@ -223,56 +145,8 @@ const SettingDialog = memo(function SettingDialog() {
               gutterBottom
               sx={{ mb: { xs: 1.5, sm: 2 }, display: 'flex', alignItems: 'center' }}
             >
-              🔑 API Configuration
+              🤖 Model Configuration
             </Typography>
-
-            {/* Api Key */}
-            <Box sx={{ mb: { xs: 2, sm: 3 } }}>
-              <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 500 }}>
-                API Key *{isApiKeyValidating && <CircularProgress size={16} sx={{ ml: 1 }} />}
-                {apiKey.trim() && !isApiKeyValidating && (
-                  <Chip
-                    label={isApiKeyValid ? 'Valid' : 'Invalid'}
-                    color={isApiKeyValid ? 'success' : 'error'}
-                    size="small"
-                    sx={{ ml: 1 }}
-                  />
-                )}
-              </Typography>
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ mb: { xs: 1, sm: 2 }, display: { xs: 'none', sm: 'block' } }}
-              >
-                Your Google GenAI API key for accessing AI models, get it from
-                https://aistudio.google.com/
-              </Typography>
-              <TextField
-                required
-                fullWidth
-                variant="outlined"
-                size="small"
-                margin="dense"
-                type={showApiKey ? 'text' : 'password'}
-                placeholder="Enter your API key"
-                autoComplete="off"
-                value={apiKey}
-                onChange={handleApiKeyChange}
-                error={apiKey.trim() !== '' && !isApiKeyValid && !isApiKeyValidating}
-                helperText={
-                  apiKey.trim() !== '' && !isApiKeyValid && !isApiKeyValidating
-                    ? 'Invalid API key'
-                    : ''
-                }
-                InputProps={{
-                  endAdornment: (
-                    <IconButton size="small" onClick={handleApiKeyToggle}>
-                      {showApiKey ? <Visibility /> : <VisibilityOff />}
-                    </IconButton>
-                  ),
-                }}
-              />
-            </Box>
 
             {/* Models */}
             <Box
@@ -289,8 +163,8 @@ const SettingDialog = memo(function SettingDialog() {
                   value={coreModel}
                   onChange={handleCoreModelChange}
                   modelList={modelList}
-                  disabled={!isApiKeyValid}
-                  modelsDisabled={modelsDisabled}
+                  disabled={false}
+                  modelsDisabled={false}
                 />
               </Box>
               <Box sx={{ flex: 1 }}>
@@ -299,8 +173,8 @@ const SettingDialog = memo(function SettingDialog() {
                   value={taskModel}
                   onChange={handleTaskModelChange}
                   modelList={modelList}
-                  disabled={!isApiKeyValid}
-                  modelsDisabled={modelsDisabled}
+                  disabled={false}
+                  modelsDisabled={false}
                 />
               </Box>
             </Box>
@@ -309,8 +183,8 @@ const SettingDialog = memo(function SettingDialog() {
               color="text.secondary"
               sx={{ mb: { xs: 1, sm: 2 }, display: { xs: 'none', sm: 'block' } }}
             >
-              Model selection is only available with a valid API key. Models are automatically
-              loaded when your API key is validated.
+              Models are provided through the Cloudflare AI Gateway. Mix and match providers and
+              models for research and tasks.
             </Typography>
           </Box>
 

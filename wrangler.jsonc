@@ -1,7 +1,41 @@
 {
   "name": "gemini-deep-research-oss",
   "compatibility_date": "2025-04-03",
+  "main": "worker/index.ts",
   "assets": {
     "not_found_handling": "single-page-application"
-  }
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gemini-deep-research-oss",
+      "database_id": "3ad4a9f5-77bd-4c1f-ad9c-bfd503a8997a",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "secrets_store_secrets": [
+    {
+      "binding": "CLOUDFLARE_ACCOUNT_ID",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "CLOUDFLARE_ACCOUNT_ID"
+    },
+    {
+      "binding": "WORKER_API_KEY",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "WORKER_API_KEY"
+    },
+    {
+      "binding": "AI_GATEWAY_TOKEN",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "CLOUDFLARE_AI_GATEWAY_TOKEN"
+    },
+    {
+      "binding": "CF_BROWSER_RENDER_TOKEN",
+      "store_id": "8c42fa70938644e0a8a109744467375f",
+      "secret_name": "CLOUDFLARE_BROWSER_RENDER_TOKEN"
+    }
+  ]
 }
