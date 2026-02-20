@@ -17,7 +17,7 @@ const AUTH_COOKIE_NAME = 'worker_api_key';
 const COOKIE_MAX_AGE = 30 * 24 * 60 * 60; // 30 days in seconds
 
 function setCookie(name: string, value: string, maxAge: number) {
-  document.cookie = `${name}=${value}; path=/; max-age=${maxAge}; SameSite=Strict`;
+  document.cookie = `${name}=${value}; path=/; max-age=${maxAge}; SameSite=Strict; Secure`;
 }
 
 function getCookie(name: string): string | null {
