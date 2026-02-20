@@ -8,6 +8,11 @@ export interface MockGoogleGenAI {
       contents: Content[];
       config?: any;
     }) => Promise<any>;
+    generateContentStream: (params: {
+      model: string;
+      contents: Content[];
+      config?: any;
+    }) => Promise<any>;
     list: () => Promise<any>;
   };
   files: {
@@ -27,6 +32,44 @@ export function createMockGoogleGenAI(): MockGoogleGenAI {
           contents: params.contents,
           config: params.config,
         });
+      },
+      generateContentStream: async (params: {
+        model: string;
+        contents: Content[];
+        config?: any;
+      }) => {
+        const response = await apiClient.generateContentStream({
+          model: params.model,
+          contents: params.contents,
+          config: params.config,
+        });
+
+        // Create an async iterator from the stream
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+
+        return {
+          stream: {
+            async *[Symbol.asyncIterator]() {
+              if (!reader) return;
+
+              try {
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+
+                  const text = decoder.decode(value, { stream: true });
+                  yield {
+                    text: () => text,
+                    candidates: [{ content: { parts: [{ text }] } }],
+                  };
+                }
+              } finally {
+                reader.releaseLock();
+              }
+            },
+          },
+        };
       },
       list: async () => {
         // Return a static list of available models

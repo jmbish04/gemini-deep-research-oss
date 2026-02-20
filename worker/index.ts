@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { desc, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import type { Env } from '../src/types/worker';
 import * as schema from '../src/db/schema';
@@ -70,7 +71,7 @@ async function handleAIGenerate(
   corsHeaders: Record<string, string>
 ): Promise<Response> {
   const body = await request.json();
-  const { provider = 'google-ai-studio', model, contents, config } = body;
+  const { provider = 'google-ai-studio', model, contents, config, stream = false } = body;
 
   // Get AI Gateway URL
   const baseUrl = await env.AI.gateway('research').getUrl(provider);
@@ -83,7 +84,42 @@ async function handleAIGenerate(
     },
   });
 
-  // Generate content
+  // Handle streaming requests
+  if (stream) {
+    const streamResponse = await ai.models.generateContentStream({
+      model,
+      contents,
+      config,
+    });
+
+    // Create a ReadableStream to pipe the AI response
+    const readableStream = new ReadableStream({
+      async start(controller) {
+        try {
+          for await (const chunk of streamResponse.stream) {
+            const text = chunk.text();
+            if (text) {
+              controller.enqueue(new TextEncoder().encode(text));
+            }
+          }
+          controller.close();
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+    });
+
+    return new Response(readableStream, {
+      headers: {
+        ...corsHeaders,
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    });
+  }
+
+  // Generate content (non-streaming)
   const response = await ai.models.generateContent({
     model,
     contents,
@@ -178,6 +214,3 @@ async function handleCreateTask(
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 }
-
-// Helper to import eq from drizzle-orm
-import { eq } from 'drizzle-orm';

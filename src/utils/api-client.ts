@@ -47,6 +47,32 @@ export class WorkerAPIClient {
     });
   }
 
+  // AI Generation with Streaming
+  async generateContentStream(params: {
+    provider?: string;
+    model: string;
+    contents: Content[];
+    config?: any;
+  }) {
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${this.apiKey}`,
+    };
+
+    const response = await fetch(`${this.baseUrl}/api/ai/generate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ ...params, stream: true }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`API Error: ${response.status} - ${error}`);
+    }
+
+    return response;
+  }
+
   // Research Sessions
   async createSession(session: NewResearchSession) {
     return this.fetch('/api/research/sessions', {
