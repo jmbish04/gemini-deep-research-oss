@@ -99,7 +99,7 @@ async function handleListSessions(
   db: ReturnType<typeof drizzle>,
   corsHeaders: Record<string, string>
 ): Promise<Response> {
-  const sessions = await db.select().from(schema.researchSessions).orderBy(schema.researchSessions.createdAt).limit(50);
+  const sessions = await db.select().from(schema.researchSessions).orderBy(desc(schema.researchSessions.createdAt)).limit(50);
 
   return new Response(JSON.stringify(sessions), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
