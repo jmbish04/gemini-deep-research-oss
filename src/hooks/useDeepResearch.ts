@@ -68,7 +68,7 @@ function useDeepResearch() {
   const commonAgentParams = useMemo(
     () => ({
       addLog: (message: string, agent?: string) => log.agent(message, agent),
-      googleGenAI: googleGenAI as any,
+      googleGenAI: googleGenAI as MockGoogleGenAI,
       thinkingBudget: settingStore.thinkingBudget,
     }),
     [googleGenAI, settingStore.thinkingBudget, log]
