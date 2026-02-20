@@ -1,999 +1,496 @@
-import { GoogleGenAI } from '@google/genai';
-import { useCallback, useMemo } from 'react';
-import runQuestionAndAnswerAgent from '../agents/qna';
-import runReportPlanAgent from '../agents/report-plan';
-import runReporterAgent from '../agents/reporter';
-import runResearchDeepAgent from '../agents/research-deep';
-import runResearchLeadAgent from '../agents/research-lead';
-import runResearcherAgent from '../agents/researcher';
-import { useSettingStore } from '../stores/setting';
-import { useTaskStore } from '../stores/task';
-import type { LogFunction, ResearchTask } from '../types';
-import { buildUserContent, buildUserContentForResearcher } from '../utils/user-contents';
+import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
+import Chip from '@mui/material/Chip';
+import CircularProgress from '@mui/material/CircularProgress';
+import Dialog from '@mui/material/Dialog';
+import DialogActions from '@mui/material/DialogActions';
+import DialogContent from '@mui/material/DialogContent';
+import DialogContentText from '@mui/material/DialogContentText';
+import DialogTitle from '@mui/material/DialogTitle';
+import Divider from '@mui/material/Divider';
+import FormControl from '@mui/material/FormControl';
+import IconButton from '@mui/material/IconButton';
+import MenuItem from '@mui/material/MenuItem';
+import type { SelectChangeEvent } from '@mui/material/Select';
+import Select from '@mui/material/Select';
+import { useTheme } from '@mui/material/styles';
+import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
+import Typography from '@mui/material/Typography';
+import useMediaQuery from '@mui/material/useMediaQuery';
+import type React from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import tones from '../../consts/tones';
+import { useGlobalStore } from '../../stores/global';
+import { useSettingStore } from '../../stores/setting';
+import ModelSelect from './ModelSelect';
+import SliderSetting from './SliderSetting';
+import ToneInfoDialog from './ToneInfoDialog';
 
-// Logging helper functions for better consistency
-const createLogHelper = (addLog: LogFunction) => ({
-  info: (message: string, agent?: string, phase?: string) =>
-    addLog(message, 'info', 'medium', { agent, phase }),
-  success: (message: string, agent?: string, phase?: string) =>
-    addLog(message, 'success', 'medium', { agent, phase }),
-  error: (message: string, agent?: string, phase?: string) =>
-    addLog(message, 'error', 'high', { agent, phase }),
-  warning: (message: string, agent?: string, phase?: string) =>
-    addLog(message, 'warning', 'medium', { agent, phase }),
-  process: (message: string, agent?: string, phase?: string) =>
-    addLog(message, 'process', 'medium', { agent, phase }),
-  research: (message: string, agent?: string, phase?: string) =>
-    addLog(message, 'research', 'medium', { agent, phase }),
-  agent: (message: string, agent?: string, phase?: string) =>
-    addLog(message, 'agent', 'low', { agent, phase }),
-  system: (message: string, agent?: string, phase?: string) =>
-    addLog(message, 'system', 'medium', { agent, phase }),
+const SettingDialog = memo(function SettingDialog() {
+  const { openSetting, setOpenSetting } = useGlobalStore();
+  const {
+    apiKey,
+    coreModel,
+    taskModel,
+    thinkingBudget,
+    depth,
+    wide,
+    parallelSearch,
+    reportTone,
+    modelList,
+    isApiKeyValid,
+    isApiKeyValidating,
+    update,
+    validateApiKey,
+  } = useSettingStore();
 
-  // Phase-specific helpers
-  startPhase: (phase: string) => addLog(`Starting ${phase}`, 'system', 'high', { phase }),
-  endPhase: (phase: string, count?: number) => {
-    const countText = count ? ` (${count} items)` : '';
-    addLog(`Completed ${phase}${countText}`, 'system', 'high', { phase, count });
-  },
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [toneInfoOpen, setToneInfoOpen] = useState(false);
 
-  // Research-specific helpers
-  startResearch: (title: string) =>
-    addLog(`Starting: ${title}`, 'research', 'medium', { phase: 'research' }),
-  completeResearch: (title: string) =>
-    addLog(`Completed: ${title}`, 'success', 'medium', { phase: 'research' }),
+  // Use refs to track validation state and prevent race conditions
+  const validationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastValidatedKeyRef = useRef<string>('');
+  const validationSequenceRef = useRef<number>(0);
 
-  // Agent thought logging
-  thought: (message: string, agent: string) =>
-    addLog(message, 'agent', 'low', { agent, phase: 'thinking' }),
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
+
+  // Memoize expensive computations
+  const selectedTone = useMemo(() => tones.find(tone => tone.slug === reportTone), [reportTone]);
+  const modelsDisabled = useMemo(
+    () => !apiKey.trim() || !isApiKeyValid || isApiKeyValidating,
+    [apiKey, isApiKeyValid, isApiKeyValidating]
+  );
+
+  // Improved API key validation with race condition prevention
+  useEffect(() => {
+    // Clear any existing timeout
+    if (validationTimeoutRef.current) {
+      clearTimeout(validationTimeoutRef.current);
+    }
+
+    const trimmedKey = apiKey.trim();
+
+    // If the key is empty, immediately set as invalid
+    if (!trimmedKey) {
+      lastValidatedKeyRef.current = '';
+      update({ isApiKeyValid: false, isApiKeyValidating: false });
+      return;
+    }
+
+    // If this is the same key we just validated, skip validation
+    if (trimmedKey === lastValidatedKeyRef.current && isApiKeyValid) {
+      return;
+    }
+
+    // Increment sequence number for this validation attempt
+    const currentSequence = ++validationSequenceRef.current;
+
+    // Set validating state immediately for non-empty keys
+    update({ isApiKeyValidating: true });
+
+    // Debounced validation
+    validationTimeoutRef.current = setTimeout(async () => {
+      // Only proceed if this is still the latest validation request
+      if (currentSequence === validationSequenceRef.current) {
+        try {
+          await validateApiKey(trimmedKey);
+          lastValidatedKeyRef.current = trimmedKey;
+        } catch (error) {
+          console.error('API key validation error:', error);
+        }
+      }
+    }, 800); // Increased debounce time to 800ms for better UX
+
+    return () => {
+      if (validationTimeoutRef.current) {
+        clearTimeout(validationTimeoutRef.current);
+      }
+    };
+  }, [apiKey, validateApiKey, update, isApiKeyValid]);
+
+  // Memoized handlers to prevent unnecessary re-renders
+  const handleClose = useCallback(() => {
+    setOpenSetting(false);
+    setShowApiKey(false);
+  }, [setOpenSetting]);
+
+  const handleApiKeyToggle = useCallback(() => {
+    setShowApiKey(prev => !prev);
+  }, []);
+
+  const handleApiKeyChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      update({ apiKey: e.target.value });
+    },
+    [update]
+  );
+
+  const handleCoreModelChange = useCallback(
+    (e: SelectChangeEvent<string>) => {
+      update({ coreModel: e.target.value });
+    },
+    [update]
+  );
+
+  const handleTaskModelChange = useCallback(
+    (e: SelectChangeEvent<string>) => {
+      update({ taskModel: e.target.value });
+    },
+    [update]
+  );
+
+  const handleToneChange = useCallback(
+    (e: SelectChangeEvent<string>) => {
+      update({ reportTone: e.target.value });
+    },
+    [update]
+  );
+
+  // const handleMinWordsChange = useCallback(
+  //   (_: Event, newValue: number | number[]) => {
+  //     update({ minWords: newValue as number });
+  //   },
+  //   [update]
+  // );
+
+  const handleThinkingBudgetChange = useCallback(
+    (_: Event, newValue: number | number[]) => {
+      update({ thinkingBudget: newValue as number });
+    },
+    [update]
+  );
+
+  const handleParallelSearchChange = useCallback(
+    (_: Event, newValue: number | number[]) => {
+      update({ parallelSearch: newValue as number });
+    },
+    [update]
+  );
+
+  const handleDepthChange = useCallback(
+    (_: Event, newValue: number | number[]) => {
+      update({ depth: newValue as number });
+    },
+    [update]
+  );
+
+  const handleWideChange = useCallback(
+    (_: Event, newValue: number | number[]) => {
+      update({ wide: newValue as number });
+    },
+    [update]
+  );
+
+  const handleToneInfoOpen = useCallback(() => {
+    setToneInfoOpen(true);
+  }, []);
+
+  const handleToneInfoClose = useCallback(() => {
+    setToneInfoOpen(false);
+  }, []);
+
+  return (
+    <>
+      <Dialog
+        open={openSetting}
+        maxWidth="md"
+        fullWidth
+        onClose={handleClose}
+        fullScreen={fullScreen}
+        scroll="paper"
+      >
+        <DialogTitle sx={{ pb: { xs: 0.5, sm: 1 }, pr: { xs: 2, sm: 3 }, pl: { xs: 2, sm: 3 } }}>
+          <Typography variant="h5" component="div">
+            Research Settings
+          </Typography>
+        </DialogTitle>
+        <DialogContent sx={{ px: { xs: 2, sm: 3 }, py: { xs: 1.5, sm: 2 } }} dividers>
+          <DialogContentText sx={{ mb: { xs: 2, sm: 3 } }}>
+            Configure your research parameters and AI models. All settings are saved locally in your
+            browser.
+          </DialogContentText>
+
+          {/* API Configuration Section */}
+          <Box sx={{ mb: { xs: 3, sm: 4 } }}>
+            <Typography
+              variant="h6"
+              color="primary"
+              gutterBottom
+              sx={{ mb: { xs: 1.5, sm: 2 }, display: 'flex', alignItems: 'center' }}
+            >
+              🔑 API Configuration
+            </Typography>
+
+            {/* Api Key */}
+            <Box sx={{ mb: { xs: 2, sm: 3 } }}>
+              <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: 500 }}>
+                API Key *{isApiKeyValidating && <CircularProgress size={16} sx={{ ml: 1 }} />}
+                {apiKey.trim() && !isApiKeyValidating && (
+                  <Chip
+                    label={isApiKeyValid ? 'Valid' : 'Invalid'}
+                    color={isApiKeyValid ? 'success' : 'error'}
+                    size="small"
+                    sx={{ ml: 1 }}
+                  />
+                )}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ mb: { xs: 1, sm: 2 }, display: { xs: 'none', sm: 'block' } }}
+              >
+                Your Google GenAI API key for accessing AI models, get it from
+                https://aistudio.google.com/
+              </Typography>
+              <TextField
+                required
+                fullWidth
+                variant="outlined"
+                size="small"
+                margin="dense"
+                type={showApiKey ? 'text' : 'password'}
+                placeholder="Enter your API key"
+                autoComplete="off"
+                value={apiKey}
+                onChange={handleApiKeyChange}
+                error={apiKey.trim() !== '' && !isApiKeyValid && !isApiKeyValidating}
+                helperText={
+                  apiKey.trim() !== '' && !isApiKeyValid && !isApiKeyValidating
+                    ? 'Invalid API key'
+                    : ''
+                }
+                InputProps={{
+                  endAdornment: (
+                    <IconButton size="small" onClick={handleApiKeyToggle}>
+                      {showApiKey ? <Visibility /> : <VisibilityOff />}
+                    </IconButton>
+                  ),
+                }}
+              />
+            </Box>
+
+            {/* Models */}
+            <Box
+              sx={{
+                display: 'flex',
+                gap: 2,
+                mb: { xs: 1.5, sm: 2 },
+                flexDirection: { xs: 'column', sm: 'row' },
+              }}
+            >
+              <Box sx={{ flex: 1 }}>
+                <ModelSelect
+                  label="Core Model"
+                  value={coreModel}
+                  onChange={handleCoreModelChange}
+                  modelList={modelList}
+                  disabled={!isApiKeyValid}
+                  modelsDisabled={modelsDisabled}
+                />
+              </Box>
+              <Box sx={{ flex: 1 }}>
+                <ModelSelect
+                  label="Task Model"
+                  value={taskModel}
+                  onChange={handleTaskModelChange}
+                  modelList={modelList}
+                  disabled={!isApiKeyValid}
+                  modelsDisabled={modelsDisabled}
+                />
+              </Box>
+            </Box>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ mb: { xs: 1, sm: 2 }, display: { xs: 'none', sm: 'block' } }}
+            >
+              Model selection is only available with a valid API key. Models are automatically
+              loaded when your API key is validated.
+            </Typography>
+          </Box>
+
+          <Divider sx={{ my: { xs: 2, sm: 3 } }} />
+
+          {/* Research Parameters Section */}
+          <Box sx={{ mb: { xs: 3, sm: 4 } }}>
+            <Typography
+              variant="h6"
+              color="primary"
+              gutterBottom
+              sx={{ mb: { xs: 1.5, sm: 2 }, display: 'flex', alignItems: 'center' }}
+            >
+              🔬 Research Parameters
+            </Typography>
+
+            {/* Report Tone */}
+            <Box sx={{ mb: { xs: 2, sm: 3 } }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 500 }}>
+                  Writing Style
+                </Typography>
+                <Tooltip title="Click to see all available styles and their descriptions">
+                  <IconButton size="small" onClick={handleToneInfoOpen} sx={{ ml: 1 }}>
+                    <HelpOutlineIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Box>
+              <FormControl fullWidth size="small">
+                <Select
+                  value={reportTone}
+                  onChange={handleToneChange}
+                  renderValue={selected => (
+                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                      <Chip
+                        label={selectedTone?.name || selected}
+                        size="small"
+                        color="primary"
+                        variant="outlined"
+                      />
+                    </Box>
+                  )}
+                >
+                  {tones.map(tone => (
+                    <MenuItem key={tone.slug} value={tone.slug}>
+                      <Box>
+                        <Typography variant="body1" sx={{ fontWeight: 500 }}>
+                          {tone.name}
+                        </Typography>
+                        {/* <Typography variant="caption" color="text.secondary" className='line-clamp-1 max-w-md'>
+                          {tone.describe}
+                        </Typography> */}
+                      </Box>
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              {selectedTone && (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ mt: 1, display: { xs: 'none', sm: 'block' } }}
+                >
+                  {selectedTone.describe}
+                </Typography>
+              )}
+            </Box>
+
+            {/* Min Words */}
+            {/* <Box sx={{ mb: { xs: 2, sm: 3 } }}>
+              <SliderSetting
+                label="Minimum Words"
+                value={minWords}
+                onChange={handleMinWordsChange}
+                min={500}
+                max={10000}
+                step={500}
+                formatLabel={value => value.toLocaleString()}
+                description="The expected length of the report will be indicated by a system prompt, but the final length may vary."
+                marks={[
+                  { value: 1000, label: '1K' },
+                  { value: 5000, label: '5K' },
+                  { value: 10000, label: '10K' },
+                ]}
+              />
+            </Box> */}
+
+            {/* Advanced Parameters - Two Column Layout with Proper Label Containment */}
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
+                gap: { xs: 2, sm: 4 },
+                rowGap: { xs: 2, sm: 3 },
+              }}
+            >
+              {/* Thinking Budget */}
+              <SliderSetting
+                label="Thinking Budget"
+                value={thinkingBudget}
+                onChange={handleThinkingBudgetChange}
+                min={1024}
+                max={16384}
+                step={1024}
+                formatLabel={value => value.toLocaleString()}
+                description="This is the maximum number of tokens that the AI can use for internal reasoning before generating the final response."
+                marks={[
+                  { value: 1024, label: '1K' },
+                  { value: 8192, label: '8K' },
+                  { value: 16384, label: '16K' },
+                ]}
+              />
+
+              {/* Parallel Search */}
+              <SliderSetting
+                label="Parallel Search"
+                value={parallelSearch}
+                onChange={handleParallelSearchChange}
+                min={1}
+                max={5}
+                step={1}
+                description="The number of simultaneous search queries executed in parallel to speed up the gathering of information."
+                marks={[
+                  { value: 1, label: 'Sequential' },
+                  { value: 3, label: 'Moderate' },
+                  { value: 5, label: 'Maximum' },
+                ]}
+              />
+
+              {/* Research Depth */}
+              <SliderSetting
+                label="Research Depth"
+                value={depth}
+                onChange={handleDepthChange}
+                min={2}
+                max={8}
+                step={1}
+                description="What is the ideal number of research rounds to ensure a thorough coverage of a query? First, go broad. Then, go deep."
+                marks={[
+                  { value: 2, label: 'Light' },
+                  { value: 3, label: 'Medium' },
+                  { value: 5, label: 'Deep' },
+                  { value: 8, label: 'Exhaustive' },
+                ]}
+              />
+
+              {/* Research Width */}
+              <SliderSetting
+                label="Research Width"
+                value={wide}
+                onChange={handleWideChange}
+                min={2}
+                max={10}
+                step={1}
+                descriptionNode={
+                  <>
+                    What is the ideal number of distinct sources to consult{' '}
+                    <span className="font-semibold">in each round</span> to ensure a broad
+                    understanding of a query?
+                  </>
+                }
+                marks={[
+                  { value: 2, label: 'Focused' },
+                  { value: 6, label: 'Balanced' },
+                  { value: 10, label: 'Broad' },
+                ]}
+              />
+            </Box>
+          </Box>
+        </DialogContent>
+        <DialogActions sx={{ px: { xs: 2, sm: 3 }, py: { xs: 1, sm: 2 } }}>
+          <Button onClick={handleClose} variant="outlined" size="medium">
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <ToneInfoDialog open={toneInfoOpen} onClose={handleToneInfoClose} />
+    </>
+  );
 });
 
-function useDeepResearch() {
-  const taskStore = useTaskStore();
-  const settingStore = useSettingStore();
-  const processConcurrent = useConcurrentTaskProcessor();
-
-  // Create logging helpers
-  const log = useMemo(() => createLogHelper(taskStore.addLog), [taskStore.addLog]);
-
-  // Memoize GoogleGenAI instance (only create if API key is set)
-  const googleGenAI = useMemo(
-    () =>
-      settingStore.apiKey
-        ? new GoogleGenAI({
-            apiKey: settingStore.apiKey,
-          })
-        : null,
-    [settingStore.apiKey]
-  );
-
-  // Memoize common agent parameters
-  const commonAgentParams = useMemo(
-    () => ({
-      addLog: (message: string, agent?: string) => log.agent(message, agent),
-      googleGenAI,
-      thinkingBudget: settingStore.thinkingBudget,
-    }),
-    [googleGenAI, settingStore.thinkingBudget, log]
-  );
-
-  // Generate Q&As
-  const generateQnAs = useCallback(async () => {
-    if (!settingStore.isApiKeyValid || settingStore.isApiKeyValidating) {
-      log.error('API key is invalid or still validating', 'system', 'validation');
-      return;
-    }
-
-    try {
-      log.startPhase('Q&A Generation');
-
-      const userContent = buildUserContent({
-        task: taskStore,
-        includeQuery: true,
-        includeQnA: false,
-        includePlan: false,
-        includeFindings: false,
-        includeFiles: true,
-      });
-
-      taskStore.setIsGeneratingQnA(true);
-
-      const { questions } = await runQuestionAndAnswerAgent({
-        ...commonAgentParams,
-        model: settingStore.coreModel,
-        userContent,
-      });
-
-      // Process questions in parallel
-      const qnaPromises = questions.map(async q => {
-        const hashedQuestion = await hashStringSHA256(q.question);
-        return { id: hashedQuestion, q: q.question, a: q.suggestedRefinement };
-      });
-
-      const qnas = await Promise.all(qnaPromises);
-      qnas.forEach(qna => taskStore.addQnA(qna));
-
-      log.endPhase('Q&A Generation', qnas.length);
-    } catch (error) {
-      log.error(`Failed to generate Q&As: ${error}`, 'qna-agent', 'generation');
-      taskStore.setIsGeneratingQnA(false);
-      throw error;
-    } finally {
-      taskStore.setIsGeneratingQnA(false);
-    }
-  }, [commonAgentParams, taskStore, settingStore, log]);
-
-  // Generate report plan
-  const generateReportPlan = useCallback(async () => {
-    // Create streaming handler with proper cleanup
-    let streamingHandler: ReturnType<typeof createSmoothStreamingHandler> | null = null;
-
-    try {
-      log.startPhase('Report Plan Generation');
-
-      const userContent = buildUserContent({
-        task: taskStore,
-        includeQuery: true,
-        includeQnA: true,
-        includePlan: false,
-        includeFindings: false,
-        includeFiles: true,
-      });
-
-      taskStore.updateReportPlan('');
-      taskStore.setIsGeneratingReportPlan(true);
-
-      streamingHandler = createSmoothStreamingHandler(
-        streamedText => taskStore.updateReportPlan(streamedText),
-        {
-          baseCharactersPerSecond: 400,
-          maxChunkSize: 200,
-          adaptiveSpeed: true,
-          debounceMs: 16,
-        }
-      );
-
-      streamingHandler.reset();
-
-      await runReportPlanAgent({
-        ...commonAgentParams,
-        model: settingStore.coreModel,
-        userContent,
-        onStreaming: chunk => streamingHandler?.addChunk(chunk),
-      });
-
-      log.endPhase('Report Plan Generation');
-    } catch (error) {
-      log.error(`Failed to generate report plan: ${error}`, 'report-plan-agent', 'generation');
-      taskStore.setIsGeneratingReportPlan(false);
-      throw error;
-    } finally {
-      streamingHandler?.finish();
-      taskStore.setIsGeneratingReportPlan(false);
-    }
-  }, [commonAgentParams, taskStore, settingStore, log]);
-
-  // Generate research tasks
-  const generateResearchTasks = useCallback(
-    async (tier: number, abortController?: AbortController | null) => {
-      log.process(
-        `Starting research task generation for round ${tier}`,
-        'system',
-        'task-generation'
-      );
-
-      // Check if previous rounds have completed
-      if (tier > 1) {
-        const previousTierTasks = taskStore.getResearchTasksByTier(tier - 1);
-        const incompleteTasks = previousTierTasks.filter(t => t.learning === '');
-
-        if (incompleteTasks.length > 0) {
-          // If there are incomplete tasks, we should not proceed with the current round
-          log.error(
-            `Found ${incompleteTasks.length} incomplete tasks from round ${tier - 1}, please complete them before proceeding.`,
-            'system',
-            'task-generation'
-          );
-
-          throw new Error('Incomplete tasks found!');
-        }
-      }
-
-      const existingTasks = taskStore.getResearchTasksByTier(tier);
-      if (existingTasks.length > 0) throw new Error('Unexpected existing tasks found!');
-
-      // Check if operation was cancelled before starting
-      if (abortController?.signal.aborted) {
-        throw new Error('AbortError');
-      }
-
-      try {
-        const userContent = buildUserContent({
-          task: taskStore,
-          includeQuery: true,
-          includeQnA: true,
-          includePlan: true,
-          includeFindings: true,
-          includeFiles: true,
-          limitCount: settingStore.wide,
-          limitFor: 'tasks',
-        });
-
-        const agentName = tier === 1 ? 'research-lead-agent' : 'research-deep-agent';
-        const { tasks } =
-          tier === 1
-            ? await runResearchLeadAgent(
-                {
-                  ...commonAgentParams,
-                  model: settingStore.coreModel,
-                  userContent,
-                },
-                abortController
-              )
-            : await runResearchDeepAgent(
-                {
-                  ...commonAgentParams,
-                  model: settingStore.coreModel,
-                  userContent,
-                },
-                abortController
-              );
-
-        // Check if operation was cancelled after agent call
-        if (abortController?.signal.aborted) {
-          throw new Error('AbortError');
-        }
-
-        // Process tasks in parallel
-        const taskPromises = tasks.map(async task => {
-          const hashedTask = await hashStringSHA256(task.title + task.direction);
-
-          return {
-            id: hashedTask,
-            tier,
-            title: task.title,
-            direction: task.direction,
-            target: task.target,
-            learning: '',
-          };
-        });
-
-        const researchTasks = await Promise.all(taskPromises);
-        researchTasks.forEach(task => taskStore.addResearchTask(task));
-
-        if (researchTasks.length === 0) {
-          log.info(
-            `No additional research tasks needed for round ${tier} - sufficient findings available`,
-            agentName,
-            'task-generation'
-          );
-        } else {
-          log.success(
-            `Generated ${researchTasks.length} research tasks for round ${tier}`,
-            agentName,
-            'task-generation'
-          );
-          // Log each task title for better visibility
-          researchTasks.forEach(task =>
-            log.info(`Task: ${task.title}`, agentName, 'task-generation')
-          );
-        }
-      } catch (error) {
-        log.error(
-          `Failed to generate research tasks for round ${tier}: ${error}`,
-          'system',
-          'task-generation'
-        );
-        throw error;
-      }
-    },
-    [commonAgentParams, taskStore, settingStore, log]
-  );
-
-  // Run research tasks
-  const runResearchTasks = useCallback(
-    async (tier: number, abortController?: AbortController | null) => {
-      const maxConcurrency = settingStore.parallelSearch || 1;
-      const existingTasks = taskStore.getResearchTasksByTier(tier);
-      const tasksToRun = existingTasks.filter(t => t.learning === '');
-
-      if (tasksToRun.length === 0) return;
-
-      // Check if operation was cancelled before starting
-      if (abortController?.signal.aborted) {
-        throw new Error('AbortError');
-      }
-
-      log.process(
-        `Executing ${tasksToRun.length} research tasks for round ${tier}`,
-        'system',
-        'research-execution'
-      );
-      log.info(`Parallel execution: ${maxConcurrency} tasks`, 'system', 'research-execution');
-
-      try {
-        await processConcurrent(
-          tasksToRun,
-          async (task: ResearchTask) => {
-            // Check if operation was cancelled before starting each task
-            if (abortController?.signal.aborted) {
-              log.warning(
-                `Research task cancelled: ${task.title}`,
-                'researcher-agent',
-                'research-execution'
-              );
-              throw new Error('AbortError');
-            }
-
-            log.startResearch(task.title);
-            taskStore.updateResearchTask({ ...task, processing: true });
-
-            try {
-              const researcherUserContent = buildUserContentForResearcher({
-                taskStore: taskStore,
-                researchTask: task,
-              });
-
-              const { learning, groundingChunks, webSearchQueries, urlsMetadata } =
-                await runResearcherAgent({
-                  userContent: researcherUserContent,
-                  googleGenAI,
-                  model: settingStore.taskModel,
-                  thinkingBudget: settingStore.thinkingBudget,
-                  abortController,
-                });
-
-              // Check if cancelled after research completes
-              if (abortController?.signal.aborted) {
-                log.warning(
-                  `Research task cancelled after completion: ${task.title}`,
-                  'researcher-agent',
-                  'research-execution'
-                );
-                taskStore.updateResearchTask({ ...task, processing: false });
-                throw new Error('AbortError');
-              }
-
-              taskStore.updateResearchTask({
-                ...task,
-                processing: false,
-                learning,
-                groundingChunks,
-                webSearchQueries,
-                urlsMetadata,
-              });
-
-              // Add sources to the task store if we have resolver
-              if (import.meta.env.VITE_VERTEXAISEARCH_RESOLVER) {
-                for (const chunk of groundingChunks) {
-                  taskStore.addSource(chunk?.web?.uri || '');
-                }
-              }
-
-              log.completeResearch(task.title);
-              return { taskId: task.id, success: true };
-            } catch (error) {
-              taskStore.updateResearchTask({ ...task, processing: false });
-
-              // Don't log errors for cancelled operations
-              if (error instanceof Error && error.message === 'AbortError') {
-                throw error;
-              }
-
-              log.error(
-                `Failed research task: ${task.title}: ${error}`,
-                'researcher-agent',
-                'research-execution'
-              );
-              throw error;
-            }
-          },
-          maxConcurrency
-        );
-
-        log.success(
-          `Completed all ${tasksToRun.length} research tasks for round ${tier}`,
-          'system',
-          'research-execution'
-        );
-      } catch (error) {
-        // Check if this was a cancellation
-        if (
-          error instanceof Error &&
-          (error.message === 'AbortError' || error.name === 'AbortError')
-        ) {
-          log.warning(
-            `Research tasks for round ${tier} were cancelled`,
-            'system',
-            'research-execution'
-          );
-          return;
-        }
-
-        log.error(
-          `Failed to run research tasks for round ${tier}: ${error}`,
-          'system',
-          'research-execution'
-        );
-        throw error;
-      }
-    },
-    [
-      taskStore,
-      settingStore.parallelSearch,
-      settingStore.taskModel,
-      settingStore.thinkingBudget,
-      googleGenAI,
-      processConcurrent,
-      log,
-    ]
-  );
-
-  // Helper function to determine current research state
-  const getResearchState = useCallback(() => {
-    const status = taskStore.getResearchStatus();
-    const maxTierReached = taskStore.maxTierReached || 0;
-    const researchCompletedEarly = taskStore.researchCompletedEarly;
-
-    return {
-      ...status,
-      maxTierReached,
-      researchCompletedEarly,
-    };
-  }, [taskStore]);
-
-  // Process a single tier (generate and run tasks)
-  const processTier = useCallback(
-    async (tier: number, abortController: AbortController) => {
-      log.process(
-        `Processing round ${tier} of ${settingStore.depth}`,
-        'system',
-        'research-planning'
-      );
-
-      // Step 1: Generate tasks for this tier if needed
-      const existingTasks = taskStore.getResearchTasksByTier(tier);
-      if (existingTasks.length === 0) {
-        await generateResearchTasks(tier, abortController);
-
-        if (abortController.signal.aborted) {
-          throw new Error('AbortError');
-        }
-
-        // Check if any tasks were generated
-        const tierTasks = taskStore.getResearchTasksByTier(tier);
-        if (tierTasks.length === 0) {
-          log.success(
-            `Research completion detected at round ${tier} - no more tasks needed`,
-            'system',
-            'research-planning'
-          );
-          taskStore.setResearchCompletedEarly(true);
-          taskStore.setMaxTierReached(tier - 1);
-          return false; // Signal completion
-        }
-      }
-
-      // Step 2: Run any incomplete tasks for this tier
-      taskStore.setMaxTierReached(tier);
-      await runResearchTasks(tier, abortController);
-
-      if (abortController.signal.aborted) {
-        throw new Error('AbortError');
-      }
-
-      return true; // Continue to next tier
-    },
-    [taskStore, settingStore.depth, generateResearchTasks, runResearchTasks, log]
-  );
-
-  // Start or resume research tasks
-  const startResearchTasks = useCallback(async () => {
-    // Create abort controller for this research session
-    const abortController = new AbortController();
-    taskStore.setResearchTasksAbortController(abortController);
-
-    try {
-      taskStore.setIsGeneratingResearchTasks(true);
-
-      const researchState = getResearchState();
-
-      if (researchState.canResume && researchState.hasFailedTasks) {
-        log.info('Resuming research from previous failure', 'system', 'research-planning');
-        log.info(
-          `Starting from round ${researchState.nextTierToProcess}`,
-          'system',
-          'research-planning'
-        );
-      } else if (researchState.canResume) {
-        log.info('Continuing research from where it left off', 'system', 'research-planning');
-        log.info(
-          `Continuing from round ${researchState.nextTierToProcess}`,
-          'system',
-          'research-planning'
-        );
-      } else {
-        log.startPhase('Research Task Execution');
-        log.info(
-          `Starting fresh research with depth: ${settingStore.depth} rounds`,
-          'system',
-          'research-planning'
-        );
-      }
-
-      // Process tiers starting from where we left off
-      for (let tier = researchState.nextTierToProcess; tier <= settingStore.depth; tier++) {
-        if (abortController.signal.aborted) {
-          log.warning('Research task execution was cancelled', 'system', 'research-planning');
-          return;
-        }
-
-        const shouldContinue = await processTier(tier, abortController);
-
-        if (!shouldContinue) {
-          // Research completed early
-          break;
-        }
-      }
-
-      log.endPhase('Research Task Execution');
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        (error.name === 'AbortError' || error.message === 'AbortError')
-      ) {
-        log.warning('Research task execution was cancelled by user', 'system', 'research-planning');
-        return;
-      }
-
-      log.error(`Failed research task execution: ${error}`, 'system', 'research-planning');
-      taskStore.setIsGeneratingResearchTasks(false);
-      throw error;
-    } finally {
-      taskStore.setIsGeneratingResearchTasks(false);
-      taskStore.setResearchTasksAbortController(null);
-    }
-  }, [taskStore, settingStore.depth, getResearchState, processTier, log]);
-
-  // Generate final report
-  const generateFinalReport = useCallback(async () => {
-    // Create abort controller for this report generation
-    const abortController = new AbortController();
-    taskStore.setFinalReportAbortController(abortController);
-
-    let streamingHandler: ReturnType<typeof createSmoothStreamingHandler> | null = null;
-
-    try {
-      log.startPhase('Final Report Generation');
-
-      taskStore.updateFinalReport('');
-      taskStore.setIsGeneratingFinalReport(true);
-
-      streamingHandler = createSmoothStreamingHandler(
-        streamedText => taskStore.updateFinalReport(streamedText),
-        {
-          baseCharactersPerSecond: 1000,
-          maxChunkSize: 600,
-          adaptiveSpeed: true,
-          debounceMs: 16,
-        }
-      );
-
-      streamingHandler.reset();
-
-      const userContent = buildUserContent({
-        task: taskStore,
-        includeQuery: true,
-        includeQnA: true,
-        includePlan: true,
-        includeFindings: true,
-        includeFiles: true,
-      });
-
-      // Check if operation was cancelled before starting
-      if (abortController.signal.aborted) {
-        log.warning('Final report generation was cancelled', 'reporter-agent', 'generation');
-        return;
-      }
-
-      await runReporterAgent(
-        {
-          ...commonAgentParams,
-          model: settingStore.coreModel,
-          userContent,
-          onStreaming: chunk => {
-            // Check if cancelled during streaming
-            if (abortController.signal.aborted) {
-              return;
-            }
-            streamingHandler?.addChunk(chunk);
-          },
-        },
-        {
-          tone: settingStore.reportTone,
-          // minWords: settingStore.minWords,
-        },
-        abortController
-      );
-
-      // Final check if operation was cancelled
-      if (abortController.signal.aborted) {
-        log.warning('Final report generation was cancelled', 'reporter-agent', 'generation');
-        return;
-      }
-
-      log.endPhase('Final Report Generation');
-    } catch (error) {
-      // Check if this is an abort error
-      if (error instanceof Error && error.name === 'AbortError') {
-        log.warning(
-          'Final report generation was cancelled by user',
-          'reporter-agent',
-          'generation'
-        );
-        return;
-      }
-
-      log.error(`Failed to generate final report: ${error}`, 'reporter-agent', 'generation');
-      throw error;
-    } finally {
-      streamingHandler?.finish();
-      taskStore.setIsGeneratingFinalReport(false);
-      taskStore.setFinalReportAbortController(null);
-    }
-  }, [commonAgentParams, taskStore, settingStore, log]);
-
-  // Upload file
-  const uploadFile = useCallback(
-    async (file: globalThis.File) => {
-      if (!settingStore.isApiKeyValid) {
-        log.error('API key is invalid', 'system', 'file-upload');
-        throw new Error('API key is invalid');
-      }
-
-      try {
-        log.process(`Uploading file: ${file.name}`, 'system', 'file-upload');
-
-        const uploadedFile = await googleGenAI.files.upload({
-          file: file, // File object extends Blob, which is compatible
-          config: {
-            mimeType: file.type,
-            displayName: file.name,
-          },
-        });
-
-        taskStore.addFile(uploadedFile);
-        log.success(`File uploaded: ${file.name}`, 'system', 'file-upload');
-
-        return uploadedFile;
-      } catch (error) {
-        log.error(`Failed to upload file ${file.name}: ${error}`, 'system', 'file-upload');
-        throw error;
-      }
-    },
-    [googleGenAI, taskStore, settingStore, log]
-  );
-
-  // Delete file
-  const deleteFile = useCallback(
-    async (fileName: string) => {
-      if (!settingStore.isApiKeyValid) {
-        log.error('API key is invalid', 'system', 'file-management');
-        throw new Error('API key is invalid');
-      }
-
-      try {
-        log.process(`Deleting file: ${fileName}`, 'system', 'file-management');
-
-        await googleGenAI.files.delete({ name: fileName });
-        taskStore.removeFile(fileName);
-        log.success(`File deleted: ${fileName}`, 'system', 'file-management');
-      } catch (error) {
-        log.error(`Failed to delete file ${fileName}: ${error}`, 'system', 'file-management');
-        throw error;
-      }
-    },
-    [googleGenAI, taskStore, settingStore, log]
-  );
-
-  // Delete all uploaded files
-  const deleteAllFiles = useCallback(async () => {
-    if (!settingStore.isApiKeyValid) {
-      log.error('API key is invalid', 'system', 'file-management');
-      return;
-    }
-
-    const files = taskStore.files;
-    if (files.length === 0) {
-      return;
-    }
-
-    try {
-      log.process(`Deleting ${files.length} uploaded files`, 'system', 'file-management');
-
-      // Delete files concurrently
-      await Promise.allSettled(
-        files.map(async file => {
-          try {
-            if (file.name) {
-              await googleGenAI.files.delete({ name: file.name });
-              log.success(`Deleted: ${file.displayName || file.name}`, 'system', 'file-management');
-            }
-          } catch (error) {
-            log.error(
-              `Failed to delete ${file.displayName || file.name}: ${error}`,
-              'system',
-              'file-management'
-            );
-          }
-        })
-      );
-
-      taskStore.clearAllFiles();
-      log.success('All files deleted', 'system', 'file-management');
-    } catch (error) {
-      log.error(`Failed to delete files: ${error}`, 'system', 'file-management');
-    }
-  }, [googleGenAI, taskStore, settingStore, log]);
-
-  // Reset tasks and delete all files
-  const resetWithFiles = useCallback(async () => {
-    try {
-      taskStore.setIsResetting(true);
-      log.system('Starting system reset', 'system', 'reset');
-
-      await deleteAllFiles();
-      taskStore.reset();
-
-      // log.system('Reset completed', 'system', 'reset');
-    } catch (error) {
-      log.error(`Error during reset: ${error}`, 'system', 'reset');
-      // Reset anyway, even if file deletion fails
-      taskStore.reset();
-    } finally {
-      taskStore.setIsResetting(false);
-    }
-  }, [deleteAllFiles, taskStore, log]);
-
-  return {
-    generateQnAs,
-    generateReportPlan,
-    generateFinalReport,
-    startResearchTasks,
-    getResearchState,
-    uploadFile,
-    deleteFile,
-    deleteAllFiles,
-    resetWithFiles,
-    // Cancellation methods
-    cancelResearchTasks: taskStore.cancelResearchTasks,
-    cancelFinalReport: taskStore.cancelFinalReport,
-  };
-}
-
-// Custom hook for concurrent task processing
-function useConcurrentTaskProcessor() {
-  return useCallback(
-    async <T, R>(
-      items: T[],
-      processor: (item: T) => Promise<R>,
-      maxConcurrency: number = 3
-    ): Promise<R[]> => {
-      const results: R[] = [];
-      const errors: Error[] = [];
-      let currentIndex = 0;
-      const activeTasks = new Set<Promise<void>>();
-
-      const processItem = async (item: T, index: number) => {
-        try {
-          const result = await processor(item);
-          results[index] = result;
-        } catch (error) {
-          errors.push(error as Error);
-          throw error;
-        }
-      };
-
-      // Start initial batch
-      while (currentIndex < items.length && activeTasks.size < maxConcurrency) {
-        const index = currentIndex++;
-        const taskPromise = processItem(items[index], index).finally(() => {
-          activeTasks.delete(taskPromise);
-        });
-        activeTasks.add(taskPromise);
-      }
-
-      // Continue processing as tasks complete
-      while (activeTasks.size > 0) {
-        await Promise.race(activeTasks);
-
-        while (currentIndex < items.length && activeTasks.size < maxConcurrency) {
-          const index = currentIndex++;
-          const taskPromise = processItem(items[index], index).finally(() => {
-            activeTasks.delete(taskPromise);
-          });
-          activeTasks.add(taskPromise);
-        }
-      }
-
-      if (errors.length > 0) {
-        const errorMessage = `Multiple tasks failed: ${errors.map(e => e.message).join('; ')}`;
-        const aggregateError = new Error(errorMessage) as Error & { errors: Error[] };
-        aggregateError.errors = errors;
-        throw aggregateError;
-      }
-
-      return results;
-    },
-    []
-  );
-}
-
-async function hashStringSHA256(inputString: string): Promise<string> {
-  try {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(inputString);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-  } catch (error) {
-    console.error('Failed to hash string:', error);
-    throw new Error('Failed to generate hash');
-  }
-}
-
-function createSmoothStreamingHandler(
-  onUpdate: (text: string) => void,
-  options: {
-    baseCharactersPerSecond?: number;
-    maxChunkSize?: number;
-    adaptiveSpeed?: boolean;
-    debounceMs?: number;
-    maxBufferSize?: number;
-  } = {}
-) {
-  const {
-    baseCharactersPerSecond = 300,
-    maxChunkSize = 500,
-    adaptiveSpeed = true,
-    debounceMs = 16,
-    maxBufferSize = 50000, // Prevent excessive memory usage
-  } = options;
-
-  let buffer = '';
-  let displayedText = ''; // Cache the displayed text instead of joining arrays
-  let isStreaming = false;
-  let streamingInterval: number | null = null;
-  let debounceTimeout: number | null = null;
-  let lastUpdateTime = 0;
-
-  const scheduleUpdate = (text: string) => {
-    const now = Date.now();
-    if (now - lastUpdateTime < debounceMs) {
-      if (debounceTimeout) clearTimeout(debounceTimeout);
-      debounceTimeout = setTimeout(() => {
-        onUpdate(text);
-        lastUpdateTime = Date.now();
-        debounceTimeout = null;
-      }, debounceMs);
-    } else {
-      onUpdate(text);
-      lastUpdateTime = now;
-    }
-  };
-
-  const cleanup = () => {
-    if (streamingInterval) {
-      clearInterval(streamingInterval);
-      streamingInterval = null;
-    }
-    if (debounceTimeout) {
-      clearTimeout(debounceTimeout);
-      debounceTimeout = null;
-    }
-    isStreaming = false;
-  };
-
-  // Cleanup function that can be called externally
-  const forceCleanup = () => {
-    cleanup();
-    if (buffer.length > 0) {
-      displayedText += buffer;
-      buffer = '';
-      onUpdate(displayedText);
-    }
-  };
-
-  const startStreaming = () => {
-    if (isStreaming || streamingInterval) return;
-
-    isStreaming = true;
-    const intervalMs = Math.max(debounceMs, 20);
-
-    streamingInterval = setInterval(() => {
-      if (buffer.length === 0) return;
-
-      const chunkSize = adaptiveSpeed
-        ? Math.min(
-            maxChunkSize,
-            Math.max(
-              1,
-              Math.floor((baseCharactersPerSecond * intervalMs) / 1000) *
-                Math.min(buffer.length / 1000 + 1, 3)
-            )
-          )
-        : Math.min(
-            maxChunkSize,
-            Math.max(1, Math.floor((baseCharactersPerSecond * intervalMs) / 1000))
-          );
-
-      // Word boundary optimization
-      let endIndex = Math.min(chunkSize, buffer.length);
-      if (endIndex < buffer.length && endIndex > 1) {
-        const breakChars = [' ', '\n', '.', ',', ';'];
-        for (let i = endIndex; i >= Math.max(1, endIndex - 20); i--) {
-          if (breakChars.includes(buffer[i])) {
-            endIndex = i + 1;
-            break;
-          }
-        }
-      }
-
-      const nextChunk = buffer.slice(0, endIndex);
-      buffer = buffer.slice(endIndex);
-      displayedText += nextChunk;
-
-      scheduleUpdate(displayedText);
-    }, intervalMs);
-  };
-
-  const addChunk = (chunk: string) => {
-    // Prevent buffer overflow
-    if (buffer.length + chunk.length > maxBufferSize) {
-      console.warn('Buffer size limit reached, flushing buffer');
-      displayedText += buffer;
-      buffer = chunk;
-      scheduleUpdate(displayedText);
-      return;
-    }
-
-    buffer += chunk;
-
-    if (!isStreaming && (chunk.length < 50 || buffer.length < 100)) {
-      displayedText += chunk;
-      buffer = buffer.slice(chunk.length);
-      scheduleUpdate(displayedText);
-      return;
-    }
-
-    if (!isStreaming) {
-      startStreaming();
-    }
-  };
-
-  const reset = () => {
-    cleanup();
-    buffer = '';
-    displayedText = '';
-  };
-
-  const finish = () => {
-    cleanup();
-    if (buffer.length > 0) {
-      displayedText += buffer;
-      buffer = '';
-      scheduleUpdate(displayedText);
-    }
-  };
-
-  return {
-    addChunk,
-    reset,
-    finish,
-    cleanup: forceCleanup,
-    getDisplayedText: () => displayedText,
-    isBufferEmpty: () => buffer.length === 0,
-  };
-}
-
-export default useDeepResearch;
+export default SettingDialog;
